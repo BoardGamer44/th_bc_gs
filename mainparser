@@ -1,0 +1,304 @@
+import re
+from datetime import date
+from datetime import timedelta
+import locale
+locale.setlocale(locale.LC_TIME, 'ru_RU.UTF-8') 
+import httplib2
+import googleapiclient.discovery
+from oauth2client.service_account import ServiceAccountCredentials
+
+# imia fai`la s zakry`ty`m cliuchom na servere
+CREDENTIALS_FILE = 'C:\\Users\\...\\xxx.json' 
+
+credentials = \
+    ServiceAccountCredentials.from_json_keyfile_name(CREDENTIALS_FILE,
+        ['https://www.googleapis.com/auth/spreadsheets',
+        'https://www.googleapis.com/auth/drive'])
+httpAuth = credentials.authorize(httplib2.Http())
+service = googleapiclient.discovery.build('sheets', 'v4', http=httpAuth)
+
+# chtenie fai`la s istoriei` soobshchenii`,
+# parsiat`sia tol`ko daty` v kotory`e soobshcheniia by`li otpravlenny` s tochnost`iu do chasa
+# poluchenny`e danny`e vozvrashchaiutsia v vide strokovogo 
+# massiva formata "data", "chas", "chislo soobshchenii`"
+def parse_csv(file_link):
+
+    file_to_parse = \
+        service.spreadsheets().values().get(spreadsheetId=file_link,
+            range='A1:A').execute()
+        
+# in data example date: "2021-05-26T20:06:06",        
+    mes_date = []  # daty` soobshchenii` v formate DD.MM.YYYYTHH
+    
+# zashchita ot duraka - sortirovka vhodiashchikh danny`kh po alfavitu, 
+# sushchestvenno zamedlit skript na bol`shikh fai`lakh
+    file_to_parse['values'].sort()
+    
+    for i in file_to_parse['values']:
+
+        # esli stroka v tablitce pusta, to api schity`vaet eyo kak massiv nulevoi` dlinny`,
+        # e`to vy`zy`vaet oshibku IndexError: list index out of range v sleduiushchem if, t.k. zapolnenny`e
+        # t.k. zapolnenny`e iachei`ka schitaiutsia massivom dlinnoi` 1 so strokoi`-soderzhimy`m iachei`ki/
+        # dlia e`togo v e`tom if "iachei`ka zapolniaet`sia probelom"
+
+        if i == []:
+            i = [' ']
+        if i[0].count('date: "') > 0:
+
+            rgroup = re.search(r"(20\d\d)-(\d\d)-(\d\d)(T\d\d):", i[0])
+
+            mes_date.append(rgroup.group(3) + '.' + rgroup.group(2)
+                            + '.' + rgroup.group(1) + rgroup.group(4))
+
+# chislo soobshchenii` v konkretny`i` chas v formate DD.MM.YYYYTHH_messages
+    mes_date_counted = []
+    mes_date_temp = mes_date[0]
+    mes_date_counter = 0
+    for j in mes_date:
+        if j == mes_date_temp:
+            mes_date_counter += 1
+        else:
+            mes_date_counted.append([mes_date_temp[:10],
+                                    mes_date_temp[11:],
+                                    str(mes_date_counter)])
+            mes_date_temp = j
+            mes_date_counter = 1
+    mes_date_counted.append([mes_date_temp[:10], mes_date_temp[11:],
+                            str(mes_date_counter)])
+
+    return mes_date_counted
+
+
+# funktciia podgotovki danny`kh k zapisi v proizvodnuiu tablitcu
+# vy`schity`vaetsia pervaia i poslednii daty` s soobshcheniiami,
+# vse daty`+chasy` v promezhutke zanuliaiutsia, esli soobshchenii` neby`lo
+
+
+def prepare_for_writing(data_for_sheet):
+    date_start = data_for_sheet[0][0]
+    date_finish = data_for_sheet[-1][0]
+    date_start_d = date(int(date_start[6:]), int(date_start[3:5]),
+                        int(date_start[0:2]))
+    date_finish_d = date(int(date_finish[6:]), int(date_finish[3:5]),
+                         int(date_finish[0:2]))
+    print (
+        'start date:', date_finish_d,
+        'finish date:',  date_finish_d,
+        'days to count:',  date_start_d - date_finish_d,
+        )
+
+    date_current_d = date_start_d
+    n = 0  # indeks massiva schitanny`kh dat
+
+# nuzhno chtoby` posle okonchaniia danny`kh tcicl zanuleniia smog zaglianut` v 
+# posledniee znachenie i sravnivat` ego
+
+    data_for_sheet.append(['', '0', ''])
+    data_for_sheet_out = []
+
+    # tcicl zanuleniia
+
+    while date_current_d <= date_finish_d:
+
+    # proverka chto e`togo chisla by`li soobshcheniia
+
+        if date_current_d.strftime('%d.%m.%Y') == data_for_sheet[n][0]:
+
+            # esli soobshcheniia by`li s plunochi, v liubom sluchae na pozitciiu 
+            # polunochi zapisy`vaet`sia tekushchaia data
+            # na ostal`ny`e chasy` v iachei`kakh daty` pishetsia pustaia stroka
+
+            if int(data_for_sheet[n][1]) == 0:
+
+                # esli chas sovpadaet - pishem podschitannoe chislo soobshchenii`, inache 0
+
+                data_for_sheet_out.append([date_current_d.strftime('%d.%m.%Y'
+                        ), data_for_sheet[n][2], 1])
+                n += 1
+            else:
+                data_for_sheet_out.append([date_current_d.strftime('%d.%m.%Y'
+                        ), 0, 1])
+
+            # proverka chto v e`tot chas by`li soobshcheniia, inache - obnulit`
+
+            for j in range(23):
+
+                # proverka chto indeks ne uehal v sleduiushchii` den`
+
+                if int(data_for_sheet[n][1]) == j + 1 \
+                    and data_for_sheet[n][0] \
+                    == date_current_d.strftime('%d.%m.%Y'):
+                    data_for_sheet_out.append(['',
+                            data_for_sheet[n][2], j + 2])
+                    n += 1
+                else:
+                    data_for_sheet_out.append(['', 0, j + 2])
+        else:
+
+         # esli e`togo chisla neby`lo soobshchenii`, to vse prosto zanuliaetsia
+         # 1 v nulevom chasu i j+2 nuzhno chtoby` rabotala logika "soobshchenie prishedshee v 4:30 by`lo
+         # v "pol piatogo", po e`tomu ego nuzhno poschitat` v iachei`ku "5"
+
+            data_for_sheet_out.append([date_current_d.strftime('%d.%m.%Y'
+                    ), 0, 1])
+            for j in range(23):
+                data_for_sheet_out.append(['', 0, j + 2])
+
+        date_current_d = date_current_d + timedelta(days=1)
+        continue
+
+    return data_for_sheet_out
+
+# 1) sozdanie proizvodnogo lista
+# 2) zapisi tuda obrabotanny`kh danny`kh
+# 3) postroeniia diagrammy`
+
+
+def create_spreadsheet_statistics(data_for_sheet_in, spreadsheetWriteId,
+                                  owner):
+
+    # pereimenovy`vaem original`ny`i` list v fai`le istochnike
+
+    sheet = \
+        service.spreadsheets().batchUpdate(spreadsheetId=spreadsheetWriteId,
+            body={'requests': [{'updateSheetProperties': {'properties': {'sheetId': 0,
+            'title': 'Original file'}, 'fields': 'title'}}]}).execute()
+
+    # sozdaem novy`i` list v fai`le istochnike
+
+    sheet = \
+        service.spreadsheets().batchUpdate(spreadsheetId=spreadsheetWriteId,
+            body={'requests': [{'addSheet': {'properties': {
+        'gridProperties': {'frozenRowCount': 1},
+        'title': 'Statistics',
+        'index': 0,
+        'sheetType': 'GRID',
+        }}}]}).execute()
+
+    # pri otrisovke diagrammy`, mozhno ukazy`vat` tol`ko sheetId, kotory`i` poluchaem tut:
+
+    created_sheet_id = sheet['replies'][0]['addSheet']['properties']['sheetId']
+
+    # zapisy`vaem proizvodny`e danny`e
+
+    service.spreadsheets().values().batchUpdate(spreadsheetId=spreadsheetWriteId,
+            body={'valueInputOption': 'USER_ENTERED',
+            'data': [{'range': 'Statistics!A1:C1',
+    # snachala zapolniat` riady`, zatem stolbtcy` 
+    # (t.e. samy`e vnutrennie spiski v values - e`to riady`)
+            'majorDimension': 'ROWS', 'values': [['Date',
+            'Number of Messages', 'Hour of Day']]},
+            {'range': 'Statistics!A2:C', 'majorDimension': 'ROWS',
+            'values': data_for_sheet_in}]}).execute()
+
+# otrisovka diagrammy`
+    service.spreadsheets().batchUpdate(spreadsheetId=spreadsheetWriteId,
+            body={'requests': [{'addChart': {'chart': {'spec': {'title': 'Number of Messages Per Hour'
+            , 'basicChart': {
+        'chartType': 'COMBO',
+        'legendPosition': 'BOTTOM_LEGEND',
+        'axis': [{'position': 'BOTTOM_AXIS', 'title': 'Date'},
+                 {'position': 'LEFT_AXIS', 'title': 'Number of Messages'
+                 }],
+    # otkuda brat` podpisi k stolbtcam
+        'domains': [{'domain': {'sourceRange': {'sources': [{
+            'sheetId': created_sheet_id,
+            'startRowIndex': 0,
+            'endRowIndex': len(data_for_sheet_in) + 1,
+            'startColumnIndex': 0,
+            'endColumnIndex': 1,
+            }]}}}],
+    # gde brat` danny`e dlia diagrammy`
+        'series': [{'series': {'sourceRange': {'sources': [{
+            'sheetId': created_sheet_id,
+            'startRowIndex': 0,
+            'endRowIndex': len(data_for_sheet_in) + 1,
+            'startColumnIndex': 1,
+            'endColumnIndex': 2,
+            }]}}, 
+     # s kakoi` storony` tcifry` na shkale otscheta
+        'targetAxis': 'LEFT_AXIS', 'type': 'COLUMN'}],
+    # otkuda brat` podpis` k linii/stolbtcam
+        'headerCount': 1,
+        }}, 
+    # polozhenie diagramma, na kakom liste i iachei`ke on startuet levy`m verkhnim uglom
+        'position': {'overlayPosition': {
+                # smeshchenie otnositel`no iakornoi` iachei`ki
+        'anchorCell': {'sheetId': created_sheet_id, 'rowIndex': 1,
+                       'columnIndex': 4},
+        'offsetXPixels': 0,
+        'offsetYPixels': 0,
+        'widthPixels': 900,
+        'heightPixels': 490,
+        }}}}}]}).execute()
+
+    # vy`dacha prav na tablitcu
+    
+    driveService = googleapiclient.discovery.build('drive', 'v3', http=httpAuth)  
+
+    # dostup na zapis` hoziainu fai`la
+
+    driveService.permissions().create(fileId=spreadsheetWriteId,
+            body={'type': 'user', 'role': 'writer',
+            'emailAddress': owner}, fields='id').execute()
+
+    
+# ssy`lka na ishodny`i` fai`l
+
+spreadsheetReadId = '...' # naprimer 16t-LqEIRr5xrKJMr4CjVKDbWthRYDliA1PQg3UuqOHQ  
+
+table = \
+    service.spreadsheets().values().get(spreadsheetId=spreadsheetReadId,
+        range='A2:F').execute()
+
+# table['values'][0][0] v pervoi` stroke, data dobavleniia fai`la
+# table['values'][0][1] ssy`lka na fai`l
+# table['values'][0][4] hoziain fai`la
+# table['values'][0][5] status obrabotki
+
+# schetchik obrabaty`vaemy`kh strok, nuzhen dlia vy`schity`vaniia iachei`ki kuda pisat` status-soobshchenie
+
+return_cell_number = 1
+for i in table['values']:
+    return_cell_number += 1
+
+    # obrabaty`vat` tol`ko stroki v kotory`kh est` ssy`lka na fai`l isodnik i vladeletc,
+    # no net zapisi v iachei`ke statusa
+
+    if len(i) == 5:
+        print ('position in progress:', return_cell_number)
+
+        # iachei`ke statusa
+
+        return_range = 'F' + str(return_cell_number) + ':F' \
+            + str(return_cell_number)
+
+        # zapis` preduprezheniia na sluchai` esli obrabotka fai`la zatianulas` ili provalilas`,
+        # chtoby` e`tot fai`l ne obrabaty`vat` povtorno poka e`to soobshchenie zanimaet iachei`ku
+
+        service.spreadsheets().values().batchUpdate(spreadsheetId=spreadsheetReadId,
+                body={'valueInputOption': 'USER_ENTERED',
+                'data': [{'range': return_range,
+                'majorDimension': 'ROWS',
+                'values': [['in progress, if this message stays more than 10 seconds - something went wrong']]
+                }]}).execute()
+
+        # parsing fai`la
+
+        mes_date_counted2 = parse_csv((i[1])[33:])
+
+        # podgotovka poluchenny`kh danny`kh k zapisi
+
+        data_for_sheet2 = prepare_for_writing(mes_date_counted2)
+
+        # sozdanie proizvodnogo lista i zapis` danny`kh
+
+        create_spreadsheet_statistics(data_for_sheet2, (i[1])[33:], i[4])
+        
+        # zapis` final`nogo statusa
+
+        service.spreadsheets().values().batchUpdate(spreadsheetId=spreadsheetReadId,
+                body={'valueInputOption': 'USER_ENTERED',
+                'data': [{'range': return_range,
+                'majorDimension': 'ROWS', 'values': [['done']]
+                }]}).execute()
